@@ -4,30 +4,32 @@
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![CI](https://github.com/dereknex/pi-sub2api-provider/actions/workflows/check.yml/badge.svg)](https://github.com/dereknex/pi-sub2api-provider/actions/workflows/check.yml)
 
-独立的 pi package：自动从 `~/.pi/agent/models.json` 与 `~/.pi/agent/auth.json` 读取 OpenAI-compatible / sub2api provider 配置，注册 provider，并在 pi 状态栏与 `/quota` 命令中展示额度信息。
+A standalone pi package that reads OpenAI-compatible / sub2api provider config from `~/.pi/agent/models.json` and `~/.pi/agent/auth.json`, registers providers, and shows quota usage in the pi status bar and via the `/quota` command.
 
-## 能力
+[中文文档](./README_CN.md)
 
-- 扫描 `~/.pi/agent/models.json` 中的 providers。
-- 从 `~/.pi/agent/auth.json` 读取对应 provider 的 `key` 或 `access`。
-- 自动探测 usage endpoint：
+## Features
+
+- Scans providers in `~/.pi/agent/models.json`.
+- Reads the matching `key` or `access` from `~/.pi/agent/auth.json`.
+- Auto-detects the usage endpoint:
   - `${baseUrl}/usage`
   - `${root}/v1/usage`
-- 获取并缓存 rate limit / daily usage。
-- 自动拉取 `${baseUrl}/models`，优先使用远端模型列表，回退到本地配置模型。
-- 调用 `pi.registerProvider()` 注册 provider。
-- 在 `session_start`、`model_select`、`turn_end` 时刷新/展示额度。
-- 注册 `/quota` 命令显示当前 provider 的详细账单与额度信息。
+- Fetches and caches rate limit / daily usage.
+- Pulls `${baseUrl}/models` and prefers the remote model list, falling back to locally configured models.
+- Registers providers via `pi.registerProvider()`.
+- Refreshes / displays quota on `session_start`, `model_select`, and `turn_end`.
+- Registers a `/quota` command that shows detailed billing and quota for the current provider.
 
-## 安装方式
+## Installation
 
-### 方式一：从 npm 安装（推荐）
+### Option 1: From npm (recommended)
 
 ```bash
 pi install npm:pi-sub2api-provider
 ```
 
-也可在 `~/.pi/agent/settings.json` 中加入：
+Or add it to `~/.pi/agent/settings.json`:
 
 ```json
 {
@@ -35,40 +37,40 @@ pi install npm:pi-sub2api-provider
 }
 ```
 
-### 方式二：从 git 安装
+### Option 2: From git
 
 ```bash
 pi install git:github.com/dereknex/pi-sub2api-provider
 ```
 
-### 方式三：作为本地 package 安装
+### Option 3: As a local package
 
 ```bash
 pi install ./pi-sub2api-provider
 ```
 
-### 方式四：临时加载测试
+### Option 4: Load temporarily for testing
 
 ```bash
 pi -e /Users/derek/workspaces/pi-sub2api-provider
 ```
 
-### 方式五：继续用全局扩展目录
+### Option 5: Keep using the global extensions directory
 
-如果暂时不想切换安装方式，可以把入口复制回全局扩展：
+If you do not want to switch installation methods yet, copy the entry back to the global extension:
 
 ```bash
 cp /Users/derek/workspaces/pi-sub2api-provider/src/index.ts ~/.pi/agent/extensions/sub2api-quota.ts
 ```
 
-## 配置要求
+## Requirements
 
-需要已有：
+You need the following files in place:
 
 - `~/.pi/agent/models.json`
 - `~/.pi/agent/auth.json`
 
-示例结构：
+Example structure:
 
 ```jsonc
 // ~/.pi/agent/models.json
@@ -94,9 +96,9 @@ cp /Users/derek/workspaces/pi-sub2api-provider/src/index.ts ~/.pi/agent/extensio
 }
 ```
 
-> 安全说明：本仓库不保存、不复制任何 API key 或 auth 文件。
+> Security note: this repository never stores or copies any API key or auth file.
 
-## 开发检查
+## Development
 
 ```bash
 cd /Users/derek/workspaces/pi-sub2api-provider
@@ -105,22 +107,22 @@ npm run check
 npm run pack:dry-run
 ```
 
-## 发布
+## Release
 
-本项目使用 Changesets 管理版本与 npm 发布。首次发布时 `package.json` 保持 `0.0.0`，由 `.changeset/initial-release.md` 生成 `0.1.0` release PR。
+This project uses Changesets to manage versioning and npm publishing. For the first release, `package.json` stays at `0.0.0`; the `0.1.0` release PR is generated from `.changeset/initial-release.md`.
 
-详细流程见 [`docs/RELEASE.md`](./docs/RELEASE.md)。
+See [`docs/RELEASE.md`](./docs/RELEASE.md) for details.
 
-## 使用
+## Usage
 
-进入 pi 后：
+Inside pi:
 
 ```text
 /model
 /quota
 ```
 
-状态栏会显示类似：
+The status bar will show something like:
 
 ```text
 ● my-sub2api: 5h $1.23/$10 • daily $4.56/$50 • weekly $12.34/$200
