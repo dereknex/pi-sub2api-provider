@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1
+
+### Patch Changes
+
+- e9b438a: Fix the incorrect context parameter configuration
+
 ## 0.1.0
 
 ### Minor Changes
