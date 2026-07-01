@@ -14,7 +14,8 @@
   - `${baseUrl}/usage`
   - `${root}/v1/usage`
 - 获取并缓存 rate limit / daily usage。
-- 自动拉取 `${baseUrl}/models`，优先使用远端模型列表，回退到本地配置模型。
+- 自动拉取 `${baseUrl}/models`，优先使用远端模型列表，仅在远端不可用时回退到本地配置模型。
+- 远端模型元数据存在时读取 `context_window`、`max_tokens` 及常见别名；如果 endpoint 只返回 `id` / `display_name`，则使用保守内置兜底值。
 - 调用 `pi.registerProvider()` 注册 provider。
 - 在 `session_start`、`model_select`、`turn_end` 时刷新/展示额度。
 - 注册 `/quota` 命令显示当前 provider 的详细账单与额度信息。
@@ -65,7 +66,7 @@ cp /Users/derek/workspaces/pi-sub2api-provider/src/index.ts ~/.pi/agent/extensio
 
 需要已有：
 
-- `~/.pi/agent/models.json`
+- `~/.pi/agent/models.json`，用于 provider 连接配置；逐模型 `models` 数组是可选项。
 - `~/.pi/agent/auth.json`
 
 示例结构：
@@ -75,10 +76,7 @@ cp /Users/derek/workspaces/pi-sub2api-provider/src/index.ts ~/.pi/agent/extensio
 {
   "providers": {
     "my-sub2api": {
-      "baseUrl": "https://example.com/v1",
-      "models": [
-        { "id": "gpt-5", "name": "GPT-5", "reasoning": true }
-      ]
+      "baseUrl": "https://example.com/v1"
     }
   }
 }

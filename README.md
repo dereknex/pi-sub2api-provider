@@ -16,7 +16,8 @@ A standalone pi package that reads OpenAI-compatible / sub2api provider config f
   - `${baseUrl}/usage`
   - `${root}/v1/usage`
 - Fetches and caches rate limit / daily usage.
-- Pulls `${baseUrl}/models` and prefers the remote model list, falling back to locally configured models.
+- Pulls `${baseUrl}/models` and prefers the remote model list, falling back to locally configured models only when the remote endpoint is unavailable.
+- Reads remote model limit metadata when present (`context_window`, `max_tokens`, and common aliases), with conservative built-in fallbacks for endpoints that only return `id` / `display_name`.
 - Registers providers via `pi.registerProvider()`.
 - Refreshes / displays quota on `session_start`, `model_select`, and `turn_end`.
 - Registers a `/quota` command that shows detailed billing and quota for the current provider.
@@ -67,7 +68,7 @@ cp /Users/derek/workspaces/pi-sub2api-provider/src/index.ts ~/.pi/agent/extensio
 
 You need the following files in place:
 
-- `~/.pi/agent/models.json`
+- `~/.pi/agent/models.json` with provider connection settings; the per-model `models` array is optional.
 - `~/.pi/agent/auth.json`
 
 Example structure:
@@ -77,10 +78,7 @@ Example structure:
 {
   "providers": {
     "my-sub2api": {
-      "baseUrl": "https://example.com/v1",
-      "models": [
-        { "id": "gpt-5", "name": "GPT-5", "reasoning": true }
-      ]
+      "baseUrl": "https://example.com/v1"
     }
   }
 }

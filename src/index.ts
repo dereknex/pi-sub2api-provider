@@ -49,13 +49,41 @@ const DEFAULT_THINKING_LEVEL_MAP: ThinkingLevelMap = {
  * key 为模型 id（小写）。
  */
 const DEFAULT_MODEL_LIMITS: Record<string, { contextWindow: number; maxTokens: number }> = {
-	"gpt-5.5": { contextWindow: 1050000, maxTokens: 128000 },
+	"gpt-5.5": { contextWindow: 272000, maxTokens: 16384 },
 	"gpt-5.4": { contextWindow: 400000, maxTokens: 128000 },
 	"gpt-5.4-mini": { contextWindow: 200000, maxTokens: 128000 },
 };
 
 function getDefaultLimit(id: string): { contextWindow: number; maxTokens: number } {
 	return DEFAULT_MODEL_LIMITS[id.toLowerCase()] ?? { contextWindow: 128000, maxTokens: 4096 };
+}
+
+function normalizePositiveInteger(value: unknown): number | undefined {
+	const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+	if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+	return Math.floor(parsed);
+}
+
+function pickRemoteContextWindow(model: any): number | undefined {
+	return normalizePositiveInteger(
+		model.context_window ??
+		model.contextWindow ??
+		model.context_length ??
+		model.max_context_tokens ??
+		model.limit?.context ??
+		model.limits?.context,
+	);
+}
+
+function pickRemoteMaxTokens(model: any): number | undefined {
+	return normalizePositiveInteger(
+		model.max_tokens ??
+		model.maxTokens ??
+		model.max_output_tokens ??
+		model.max_completion_tokens ??
+		model.limit?.output ??
+		model.limits?.output,
+	);
 }
 
 interface ProviderConfig {
@@ -322,6 +350,8 @@ export default async function (pi: ExtensionAPI) {
 					normalizedId.includes("gpt55")
 				);
 				const defaultLimit = getDefaultLimit(id);
+				const remoteContextWindow = pickRemoteContextWindow(m);
+				const remoteMaxTokens = pickRemoteMaxTokens(m);
 				return {
 					...configured,
 					id,
@@ -329,8 +359,8 @@ export default async function (pi: ExtensionAPI) {
 					reasoning: isReasoning,
 					input: ["text" as const],
 					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-					contextWindow: configured?.contextWindow ?? m.context_window ?? defaultLimit.contextWindow,
-					maxTokens: configured?.maxTokens ?? m.max_tokens ?? defaultLimit.maxTokens,
+					contextWindow: remoteContextWindow ?? configured?.contextWindow ?? defaultLimit.contextWindow,
+					maxTokens: remoteMaxTokens ?? configured?.maxTokens ?? defaultLimit.maxTokens,
 					// 仅 reasoning 模型挂 thinkingLevelMap；非 reasoning 模型留空避免显示思考等级选择器。
 					thinkingLevelMap: isReasoning
 						? (configured?.thinkingLevelMap ?? DEFAULT_THINKING_LEVEL_MAP)
