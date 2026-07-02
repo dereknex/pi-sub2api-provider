@@ -3,6 +3,66 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
+/**
+ * 判断错误是否值得重试（网络/超时类瞬时故障）。
+ * 业务错误（4xx）不重试。
+ */
+function isRetryableError(e: unknown): boolean {
+	if (e instanceof DOMException) {
+		const name = e.name;
+		return name === "TimeoutError" || name === "AbortError" || name === "NetworkError";
+	}
+	if (e instanceof Error) {
+		const msg = e.message.toLowerCase();
+		return (
+			msg.includes("aborted") ||
+			msg.includes("timeout") ||
+			msg.includes("econnreset") ||
+			msg.includes("econnrefused") ||
+			msg.includes("enotfound") ||
+			msg.includes("socket hang up") ||
+			msg.includes("fetch failed") ||
+			msg.includes("undici")
+		);
+	}
+	return false;
+}
+
+/**
+ * 带重试与指数退避的 fetch 包装。
+ *
+ * sub2api usage 端点偶尔会超时（undici 在重试耗尽后抛
+ * "Aborted after 1 retry attempt"）。这里主动重试，并把
+ * 最终错误吃掉返回 null，避免异常逃逸到扩展顶层导致 pi 崩溃。
+ */
+async function fetchWithRetry(
+	url: string,
+	init: RequestInit & { timeoutMs?: number } = {},
+	retries = 2,
+): Promise<Response | null> {
+	const { timeoutMs = 5000, ...rest } = init;
+	let lastErr: unknown;
+	for (let attempt = 0; attempt <= retries; attempt++) {
+		try {
+			const res = await fetch(url, {
+				...rest,
+				signal: AbortSignal.timeout(timeoutMs),
+			});
+			return res;
+		} catch (e) {
+			lastErr = e;
+			// 业务错误（非网络类）不重试，直接返回 null
+			if (!isRetryableError(e)) break;
+			if (attempt < retries) {
+				const delay = Math.min(1000 * 2 ** attempt, 4000);
+				await new Promise((r) => setTimeout(r, delay));
+				continue;
+			}
+		}
+	}
+	return null;
+}
+
 interface ProviderModelConfig {
 	id: string;
 	name?: string;
@@ -174,15 +234,14 @@ async function probeUsageEndpoint(baseUrl: string, apiKey: string): Promise<stri
 	];
 
 	for (const url of candidates) {
+		const res = await fetchWithRetry(url, {
+			headers: {
+				"Authorization": `Bearer ${apiKey}`,
+				"Accept": "application/json",
+			},
+		});
+		if (!res || !res.ok) continue;
 		try {
-			const res = await fetch(url, {
-				headers: {
-					"Authorization": `Bearer ${apiKey}`,
-					"Accept": "application/json",
-				},
-				signal: AbortSignal.timeout(5000),
-			});
-			if (!res.ok) continue;
 			const text = await res.text();
 			if (text.includes("<!doctype") || text.includes("<html")) continue;
 			const data = JSON.parse(text);
@@ -202,14 +261,13 @@ async function probeUsageEndpoint(baseUrl: string, apiKey: string): Promise<stri
 
 async function updateQuota(providerId: string, usageUrl: string, apiKey: string): Promise<boolean> {
 	try {
-		const res = await fetch(usageUrl, {
+		const res = await fetchWithRetry(usageUrl, {
 			headers: {
 				"Authorization": `Bearer ${apiKey}`,
 				"Accept": "application/json",
 			},
-			signal: AbortSignal.timeout(5000),
 		});
-		if (!res.ok) return false;
+		if (!res || !res.ok) return false;
 		const text = await res.text();
 		if (text.includes("<!doctype") || text.includes("<html")) return false;
 		const data: any = JSON.parse(text);
@@ -272,15 +330,14 @@ function formatStatusText(providerId: string, info: QuotaInfo): string {
 
 async function fetchModels(baseUrl: string, apiKey: string): Promise<any[] | null> {
 	const url = `${baseUrl.replace(/\/+$/, "")}/models`;
+	const res = await fetchWithRetry(url, {
+		headers: {
+			"Authorization": `Bearer ${apiKey}`,
+			"Accept": "application/json",
+		},
+	});
 	try {
-		const res = await fetch(url, {
-			headers: {
-				"Authorization": `Bearer ${apiKey}`,
-				"Accept": "application/json",
-			},
-			signal: AbortSignal.timeout(5000),
-		});
-		if (res.ok) {
+		if (res && res.ok) {
 			const payload = await res.json();
 			if (payload && Array.isArray(payload.data)) {
 				return payload.data;
@@ -317,65 +374,69 @@ export default async function (pi: ExtensionAPI) {
 
 	if (modelsConfig.providers) {
 		for (const [providerId, providerVal] of Object.entries(modelsConfig.providers)) {
-			const baseUrl = providerVal.baseUrl;
-			if (!baseUrl) continue;
+			try {
+				const baseUrl = providerVal.baseUrl;
+				if (!baseUrl) continue;
 
-			const authEntry = auth[providerId];
-			const apiKey = authEntry?.key || authEntry?.access;
-			if (!apiKey) continue;
+				const authEntry = auth[providerId];
+				const apiKey = authEntry?.key || authEntry?.access;
+				if (!apiKey) continue;
 
-			const usageUrl = await probeUsageEndpoint(baseUrl, apiKey);
+				const usageUrl = await probeUsageEndpoint(baseUrl, apiKey);
 
-			if (usageUrl) {
-				console.log(`[sub2api-quota] Detected usage endpoint for provider: ${providerId} at ${usageUrl}`);
-				await updateQuota(providerId, usageUrl, apiKey);
-			} else {
-				console.log(`[sub2api-quota] No usage endpoint found for provider: ${providerId} — quota display disabled`);
-			}
+				if (usageUrl) {
+					console.log(`[sub2api-quota] Detected usage endpoint for provider: ${providerId} at ${usageUrl}`);
+					await updateQuota(providerId, usageUrl, apiKey);
+				} else {
+					console.log(`[sub2api-quota] No usage endpoint found for provider: ${providerId} — quota display disabled`);
+				}
 
-			const modelsBase = baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl.replace(/\/+$/, "")}/v1`;
-			const fetchedModels = await fetchModels(modelsBase, apiKey);
-			const configuredModels = new Map(
-				(providerVal.models || []).map((model) => [model.id, model]),
-			);
-			const registeredModels = (fetchedModels || providerVal.models || []).map((m: any) => {
-				const id = m.id;
-				const configured = configuredModels.get(id);
-				const normalizedId = id.toLowerCase().replace(/[^a-z0-9]/g, "");
-				const isReasoning = configured?.reasoning ?? (
-					normalizedId.includes("o1") ||
-					normalizedId.includes("o3") ||
-					normalizedId.includes("reasoning") ||
-					normalizedId.includes("gpt5") ||
-					normalizedId.includes("gpt55")
+				const modelsBase = baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl.replace(/\/+$/, "")}/v1`;
+				const fetchedModels = await fetchModels(modelsBase, apiKey);
+				const configuredModels = new Map(
+					(providerVal.models || []).map((model) => [model.id, model]),
 				);
-				const defaultLimit = getDefaultLimit(id);
-				const remoteContextWindow = pickRemoteContextWindow(m);
-				const remoteMaxTokens = pickRemoteMaxTokens(m);
-				return {
-					...configured,
-					id,
-					name: m.display_name || m.name || configured?.name || id,
-					reasoning: isReasoning,
-					input: ["text" as const],
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-					contextWindow: remoteContextWindow ?? configured?.contextWindow ?? defaultLimit.contextWindow,
-					maxTokens: remoteMaxTokens ?? configured?.maxTokens ?? defaultLimit.maxTokens,
-					// 仅 reasoning 模型挂 thinkingLevelMap；非 reasoning 模型留空避免显示思考等级选择器。
-					thinkingLevelMap: isReasoning
-						? (configured?.thinkingLevelMap ?? DEFAULT_THINKING_LEVEL_MAP)
-						: undefined,
-				};
-			});
+				const registeredModels = (fetchedModels || providerVal.models || []).map((m: any) => {
+					const id = m.id;
+					const configured = configuredModels.get(id);
+					const normalizedId = id.toLowerCase().replace(/[^a-z0-9]/g, "");
+					const isReasoning = configured?.reasoning ?? (
+						normalizedId.includes("o1") ||
+						normalizedId.includes("o3") ||
+						normalizedId.includes("reasoning") ||
+						normalizedId.includes("gpt5") ||
+						normalizedId.includes("gpt55")
+					);
+					const defaultLimit = getDefaultLimit(id);
+					const remoteContextWindow = pickRemoteContextWindow(m);
+					const remoteMaxTokens = pickRemoteMaxTokens(m);
+					return {
+						...configured,
+						id,
+						name: m.display_name || m.name || configured?.name || id,
+						reasoning: isReasoning,
+						input: ["text" as const],
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+						contextWindow: remoteContextWindow ?? configured?.contextWindow ?? defaultLimit.contextWindow,
+						maxTokens: remoteMaxTokens ?? configured?.maxTokens ?? defaultLimit.maxTokens,
+						// 仅 reasoning 模型挂 thinkingLevelMap；非 reasoning 模型留空避免显示思考等级选择器。
+						thinkingLevelMap: isReasoning
+							? (configured?.thinkingLevelMap ?? DEFAULT_THINKING_LEVEL_MAP)
+							: undefined,
+					};
+				});
 
-			pi.registerProvider(providerId, {
-				name: providerId,
-				baseUrl: modelsBase,
-				apiKey,
-				authHeader: true,
-				api: "openai-completions",
-				models: registeredModels,
-			});
+				pi.registerProvider(providerId, {
+					name: providerId,
+					baseUrl: modelsBase,
+					apiKey,
+					authHeader: true,
+					api: "openai-completions",
+					models: registeredModels,
+				});
+			} catch (e) {
+				console.error(`[sub2api-quota] Failed to initialize provider ${providerId}:`, e);
+			}
 		}
 	}
 
@@ -394,10 +455,13 @@ export default async function (pi: ExtensionAPI) {
 		if (quotaProviders.has(providerId)) {
 			const info = quotaProviders.get(providerId)!;
 			if (Date.now() - info.lastUpdated > 60000) {
-				updateQuota(providerId, info.baseUrl, info.apiKey).then(() => {
-					const fresh = quotaProviders.get(providerId)!;
-					ctx.ui.setStatus("sub2api-quota", ctx.ui.theme.fg("accent", formatStatusText(providerId, fresh)));
-				});
+				updateQuota(providerId, info.baseUrl, info.apiKey)
+					.then(() => {
+						const fresh = quotaProviders.get(providerId);
+						if (!fresh) return;
+						ctx.ui.setStatus("sub2api-quota", ctx.ui.theme.fg("accent", formatStatusText(providerId, fresh)));
+					})
+					.catch((e) => console.error(`[sub2api-quota] background update failed for ${providerId}:`, e));
 			}
 			ctx.ui.setStatus("sub2api-quota", ctx.ui.theme.fg("accent", formatStatusText(providerId, info)));
 		} else {
@@ -409,10 +473,13 @@ export default async function (pi: ExtensionAPI) {
 		const model = ctx.model;
 		if (model && quotaProviders.has(model.provider)) {
 			const info = quotaProviders.get(model.provider)!;
-			updateQuota(model.provider, info.baseUrl, info.apiKey).then(() => {
-				const fresh = quotaProviders.get(model.provider)!;
-				ctx.ui.setStatus("sub2api-quota", ctx.ui.theme.fg("accent", formatStatusText(model.provider, fresh)));
-			});
+			updateQuota(model.provider, info.baseUrl, info.apiKey)
+				.then(() => {
+					const fresh = quotaProviders.get(model.provider);
+					if (!fresh) return;
+					ctx.ui.setStatus("sub2api-quota", ctx.ui.theme.fg("accent", formatStatusText(model.provider, fresh)));
+				})
+				.catch((e) => console.error(`[sub2api-quota] background update failed for ${model.provider}:`, e));
 		}
 	});
 
