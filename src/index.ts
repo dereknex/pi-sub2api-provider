@@ -199,6 +199,77 @@ interface QuotaInfo {
 
 const quotaProviders = new Map<string, QuotaInfo>();
 
+interface LazyProviderState {
+	baseUrl: string;
+	modelsBase: string;
+	apiKey: string;
+	providerVal: ProviderConfig;
+	usageUrl?: string | null;
+	quotaProbePromise?: Promise<boolean>;
+	modelsLoadPromise?: Promise<void>;
+	modelsLoaded: boolean;
+}
+
+const lazyProviders = new Map<string, LazyProviderState>();
+
+function getModelsBase(baseUrl: string): string {
+	return baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl.replace(/\/+$/, "")}/v1`;
+}
+
+function buildRegisteredModels(providerVal: ProviderConfig, fetchedModels?: any[]): any[] {
+	const configuredModels = new Map(
+		(providerVal.models || []).map((model) => [model.id, model]),
+	);
+	return (fetchedModels || providerVal.models || []).map((m: any) => {
+		const id = m.id;
+		const configured = configuredModels.get(id);
+		const normalizedId = id.toLowerCase().replace(/[^a-z0-9]/g, "");
+		const isReasoning = configured?.reasoning ?? (
+			normalizedId.includes("o1") ||
+			normalizedId.includes("o3") ||
+			normalizedId.includes("reasoning") ||
+			normalizedId.includes("gpt5") ||
+			normalizedId.includes("gpt55")
+		);
+		const defaultLimit = getDefaultLimit(id);
+		const remoteContextWindow = pickRemoteContextWindow(m);
+		const remoteMaxTokens = pickRemoteMaxTokens(m);
+		return {
+			...configured,
+			id,
+			name: m.display_name || m.name || configured?.name || id,
+			reasoning: isReasoning,
+			input: ["text" as const],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: remoteContextWindow ?? configured?.contextWindow ?? defaultLimit.contextWindow,
+			maxTokens: remoteMaxTokens ?? configured?.maxTokens ?? defaultLimit.maxTokens,
+			// 仅 reasoning 模型挂 thinkingLevelMap；非 reasoning 模型留空避免显示思考等级选择器。
+			thinkingLevelMap: isReasoning
+				? (configured?.thinkingLevelMap ?? DEFAULT_THINKING_LEVEL_MAP)
+				: undefined,
+		};
+	});
+}
+
+function registerProviderModels(
+	pi: ExtensionAPI,
+	providerId: string,
+	state: Pick<LazyProviderState, "modelsBase" | "apiKey" | "providerVal">,
+	fetchedModels?: any[],
+): boolean {
+	const models = buildRegisteredModels(state.providerVal, fetchedModels);
+	if (!models.length) return false;
+	pi.registerProvider(providerId, {
+		name: providerId,
+		baseUrl: state.modelsBase,
+		apiKey: state.apiKey,
+		authHeader: true,
+		api: "openai-completions",
+		models,
+	});
+	return true;
+}
+
 function normalizeWindowLabel(window: string): string {
 	const value = window.toLowerCase();
 	if (value === "5h") return "5h";
@@ -213,6 +284,18 @@ function formatMoney(value: number, fractionDigits = 2): string {
 
 function formatUsageLimit(rl: RateLimit): string {
 	return `${normalizeWindowLabel(rl.window)} ${formatMoney(rl.used)}/${formatMoney(rl.limit, 0)}`;
+}
+
+function shortWindowLabel(window: string): string {
+	const label = normalizeWindowLabel(window);
+	if (label === "daily") return "d";
+	if (label === "weekly") return "w";
+	return label;
+}
+
+function formatUsagePercent(rl: RateLimit): string {
+	const percent = rl.limit > 0 ? Math.round((rl.used / rl.limit) * 100) : 0;
+	return `${shortWindowLabel(rl.window)} ${percent}%`;
 }
 
 function pickQuotaWindows(rateLimits: RateLimit[]): RateLimit[] {
@@ -323,9 +406,17 @@ async function updateQuota(providerId: string, usageUrl: string, apiKey: string)
 function formatStatusText(providerId: string, info: QuotaInfo): string {
 	const windows = pickQuotaWindows(info.rateLimits).filter((rl) => rl.limit > 0);
 	if (windows.length) {
-		return `● ${providerId}: ${windows.map(formatUsageLimit).join(" • ")}`;
+		// Footer space is tight: keep detailed dollar values in /quota, and show
+		// compact percentages in the persistent status line to avoid TUI wrapping/flicker.
+		return `● ${providerId} ${windows.map(formatUsagePercent).join(" · ")}`;
 	}
-	return `● ${providerId}: daily ${formatMoney(info.todayCost)}`;
+	return `● ${providerId} d ${formatMoney(info.todayCost)}`;
+}
+
+function debugQuotaLog(message: string): void {
+	if (process.env.SUB2API_QUOTA_DEBUG === "1") {
+		console.error(message);
+	}
 }
 
 async function fetchModels(baseUrl: string, apiKey: string): Promise<any[] | null> {
@@ -372,7 +463,28 @@ export default async function (pi: ExtensionAPI) {
 		}
 	}
 
+	async function loadRemoteModels(providerId: string): Promise<void> {
+		const state = lazyProviders.get(providerId);
+		if (!state || state.modelsLoaded) return;
+		if (!state.modelsLoadPromise) {
+			state.modelsLoadPromise = fetchModels(state.modelsBase, state.apiKey)
+				.then((fetchedModels) => {
+					if (fetchedModels?.length) {
+						registerProviderModels(pi, providerId, state, fetchedModels);
+						state.modelsLoaded = true;
+					}
+				})
+				.catch((e) => console.error(`[sub2api-quota] Remote model load failed for ${providerId}:`, e))
+				.finally(() => {
+					state.modelsLoadPromise = undefined;
+				});
+		}
+		await state.modelsLoadPromise;
+	}
+
 	if (modelsConfig.providers) {
+		const eagerModelLoads: Promise<void>[] = [];
+
 		for (const [providerId, providerVal] of Object.entries(modelsConfig.providers)) {
 			try {
 				const baseUrl = providerVal.baseUrl;
@@ -382,105 +494,131 @@ export default async function (pi: ExtensionAPI) {
 				const apiKey = authEntry?.key || authEntry?.access;
 				if (!apiKey) continue;
 
-				const usageUrl = await probeUsageEndpoint(baseUrl, apiKey);
-
-				if (usageUrl) {
-					console.log(`[sub2api-quota] Detected usage endpoint for provider: ${providerId} at ${usageUrl}`);
-					await updateQuota(providerId, usageUrl, apiKey);
-				} else {
-					console.log(`[sub2api-quota] No usage endpoint found for provider: ${providerId} — quota display disabled`);
-				}
-
-				const modelsBase = baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl.replace(/\/+$/, "")}/v1`;
-				const fetchedModels = await fetchModels(modelsBase, apiKey);
-				const configuredModels = new Map(
-					(providerVal.models || []).map((model) => [model.id, model]),
-				);
-				const registeredModels = (fetchedModels || providerVal.models || []).map((m: any) => {
-					const id = m.id;
-					const configured = configuredModels.get(id);
-					const normalizedId = id.toLowerCase().replace(/[^a-z0-9]/g, "");
-					const isReasoning = configured?.reasoning ?? (
-						normalizedId.includes("o1") ||
-						normalizedId.includes("o3") ||
-						normalizedId.includes("reasoning") ||
-						normalizedId.includes("gpt5") ||
-						normalizedId.includes("gpt55")
-					);
-					const defaultLimit = getDefaultLimit(id);
-					const remoteContextWindow = pickRemoteContextWindow(m);
-					const remoteMaxTokens = pickRemoteMaxTokens(m);
-					return {
-						...configured,
-						id,
-						name: m.display_name || m.name || configured?.name || id,
-						reasoning: isReasoning,
-						input: ["text" as const],
-						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-						contextWindow: remoteContextWindow ?? configured?.contextWindow ?? defaultLimit.contextWindow,
-						maxTokens: remoteMaxTokens ?? configured?.maxTokens ?? defaultLimit.maxTokens,
-						// 仅 reasoning 模型挂 thinkingLevelMap；非 reasoning 模型留空避免显示思考等级选择器。
-						thinkingLevelMap: isReasoning
-							? (configured?.thinkingLevelMap ?? DEFAULT_THINKING_LEVEL_MAP)
-							: undefined,
-					};
-				});
-
-				pi.registerProvider(providerId, {
-					name: providerId,
-					baseUrl: modelsBase,
+				const state: LazyProviderState = {
+					baseUrl,
+					modelsBase: getModelsBase(baseUrl),
 					apiKey,
-					authHeader: true,
-					api: "openai-completions",
-					models: registeredModels,
-				});
+					providerVal,
+					modelsLoaded: false,
+				};
+				lazyProviders.set(providerId, state);
+
+				// 启动期优先用本地 models.json 注册；无本地模型时同步拉取 /models，
+				// 否则 pi 在扩展加载完成前无法匹配 provider/model 模式（如 s2a/gpt-5.5）。
+				const registered = registerProviderModels(pi, providerId, state);
+				if (registered) {
+					state.modelsLoaded = true;
+				} else {
+					eagerModelLoads.push(
+						loadRemoteModels(providerId).then(() => {
+							if (!state.modelsLoaded) {
+								console.warn(
+									`[sub2api-quota] Provider ${providerId}: no local models and remote /models unavailable. ` +
+									`Add a models array to models.json or verify baseUrl/auth.`,
+								);
+							}
+						}),
+					);
+				}
 			} catch (e) {
 				console.error(`[sub2api-quota] Failed to initialize provider ${providerId}:`, e);
 			}
 		}
+
+		if (eagerModelLoads.length) {
+			await Promise.all(eagerModelLoads);
+		}
+	}
+
+	async function ensureQuotaProvider(providerId: string): Promise<boolean> {
+		if (quotaProviders.has(providerId)) return true;
+		const state = lazyProviders.get(providerId);
+		if (!state) return false;
+		if (!state.quotaProbePromise) {
+			state.quotaProbePromise = (async () => {
+				if (state.usageUrl === undefined) {
+					state.usageUrl = await probeUsageEndpoint(state.baseUrl, state.apiKey);
+					if (state.usageUrl) {
+						debugQuotaLog(`[sub2api-quota] Detected usage endpoint for provider: ${providerId} at ${state.usageUrl}`);
+					} else {
+						debugQuotaLog(`[sub2api-quota] No usage endpoint found for provider: ${providerId} — quota display disabled`);
+					}
+				}
+				if (!state.usageUrl) return false;
+				return updateQuota(providerId, state.usageUrl, state.apiKey);
+			})()
+				.catch((e) => {
+					console.error(`[sub2api-quota] Lazy quota initialization failed for ${providerId}:`, e);
+					return false;
+				})
+				.finally(() => {
+					state.quotaProbePromise = undefined;
+				});
+		}
+		return state.quotaProbePromise;
+	}
+
+	function refreshProviderInBackground(providerId: string, onQuota?: () => void): void {
+		void loadRemoteModels(providerId);
+		void ensureQuotaProvider(providerId).then((ok) => {
+			if (ok) onQuota?.();
+		});
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
 		const model = ctx.model;
-		if (model && quotaProviders.has(model.provider)) {
-			const info = quotaProviders.get(model.provider)!;
+		if (!model || !lazyProviders.has(model.provider)) return;
+
+		const info = quotaProviders.get(model.provider);
+		if (info) {
 			ctx.ui.setStatus("sub2api-quota", ctx.ui.theme.fg("accent", formatStatusText(model.provider, info)));
 		}
+		refreshProviderInBackground(model.provider, () => {
+			const fresh = quotaProviders.get(model.provider);
+			if (!fresh) return;
+			ctx.ui.setStatus("sub2api-quota", ctx.ui.theme.fg("accent", formatStatusText(model.provider, fresh)));
+		});
 	});
 
 	pi.on("model_select", async (event, ctx) => {
 		const { model } = event;
 		const providerId = model.provider;
 
-		if (quotaProviders.has(providerId)) {
-			const info = quotaProviders.get(providerId)!;
-			if (Date.now() - info.lastUpdated > 60000) {
-				updateQuota(providerId, info.baseUrl, info.apiKey)
-					.then(() => {
-						const fresh = quotaProviders.get(providerId);
-						if (!fresh) return;
-						ctx.ui.setStatus("sub2api-quota", ctx.ui.theme.fg("accent", formatStatusText(providerId, fresh)));
-					})
-					.catch((e) => console.error(`[sub2api-quota] background update failed for ${providerId}:`, e));
-			}
-			ctx.ui.setStatus("sub2api-quota", ctx.ui.theme.fg("accent", formatStatusText(providerId, info)));
-		} else {
+		if (!lazyProviders.has(providerId)) {
 			ctx.ui.setStatus("sub2api-quota", undefined);
+			return;
 		}
+
+		const info = quotaProviders.get(providerId);
+		if (info) {
+			ctx.ui.setStatus("sub2api-quota", ctx.ui.theme.fg("accent", formatStatusText(providerId, info)));
+			if (Date.now() - info.lastUpdated <= 60000) {
+				void loadRemoteModels(providerId);
+				return;
+			}
+		}
+
+		refreshProviderInBackground(providerId, () => {
+			const fresh = quotaProviders.get(providerId);
+			if (!fresh) return;
+			ctx.ui.setStatus("sub2api-quota", ctx.ui.theme.fg("accent", formatStatusText(providerId, fresh)));
+		});
 	});
 
 	pi.on("turn_end", async (_event, ctx) => {
 		const model = ctx.model;
-		if (model && quotaProviders.has(model.provider)) {
-			const info = quotaProviders.get(model.provider)!;
-			updateQuota(model.provider, info.baseUrl, info.apiKey)
+		if (!model || !lazyProviders.has(model.provider)) return;
+		void ensureQuotaProvider(model.provider).then((ok) => {
+			if (!ok) return;
+			const info = quotaProviders.get(model.provider);
+			if (!info) return;
+			return updateQuota(model.provider, info.baseUrl, info.apiKey)
 				.then(() => {
 					const fresh = quotaProviders.get(model.provider);
 					if (!fresh) return;
 					ctx.ui.setStatus("sub2api-quota", ctx.ui.theme.fg("accent", formatStatusText(model.provider, fresh)));
-				})
-				.catch((e) => console.error(`[sub2api-quota] background update failed for ${model.provider}:`, e));
-		}
+				});
+		}).catch((e) => console.error(`[sub2api-quota] background update failed for ${model.provider}:`, e));
 	});
 
 	pi.registerCommand("quota", {
@@ -492,12 +630,17 @@ export default async function (pi: ExtensionAPI) {
 				return;
 			}
 			const providerId = model.provider;
-			if (!quotaProviders.has(providerId)) {
-				ctx.ui.notify(`Provider '${providerId}' has no usage endpoint available.`, "warning");
+			if (!lazyProviders.has(providerId)) {
+				ctx.ui.notify(`Provider '${providerId}' is not managed by sub2api quota.`, "warning");
 				return;
 			}
 
 			ctx.ui.notify("Fetching latest billing info...", "info");
+			const available = await ensureQuotaProvider(providerId);
+			if (!available || !quotaProviders.has(providerId)) {
+				ctx.ui.notify(`Provider '${providerId}' has no usage endpoint available.`, "warning");
+				return;
+			}
 			const info = quotaProviders.get(providerId)!;
 			const success = await updateQuota(providerId, info.baseUrl, info.apiKey);
 			if (!success) {
