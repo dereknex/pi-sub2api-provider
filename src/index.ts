@@ -63,10 +63,26 @@ async function fetchWithRetry(
 	return null;
 }
 
+interface ModelCost {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	tiers?: Array<{
+		inputTokensAbove: number;
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+	}>;
+}
+
 interface ProviderModelConfig {
 	id: string;
 	name?: string;
 	reasoning?: boolean;
+	input?: Array<"text" | "image">;
+	cost?: ModelCost;
 	contextWindow?: number;
 	maxTokens?: number;
 	thinkingLevelMap?: ThinkingLevelMap;
@@ -83,6 +99,7 @@ type ThinkingLevelMap = {
 	medium?: string | null;
 	high?: string | null;
 	xhigh?: string | null;
+	max?: string | null;
 };
 
 /**
@@ -108,14 +125,56 @@ const DEFAULT_THINKING_LEVEL_MAP: ThinkingLevelMap = {
  * 上游 /models 不返回这些字段时回退使用。
  * key 为模型 id（小写）。
  */
-const DEFAULT_MODEL_LIMITS: Record<string, { contextWindow: number; maxTokens: number }> = {
+const DEFAULT_MODEL_METADATA: Record<string, {
+	contextWindow: number;
+	maxTokens: number;
+	input?: Array<"text" | "image">;
+	reasoning?: boolean;
+	thinkingLevelMap?: ThinkingLevelMap;
+	cost?: ModelCost;
+}> = {
 	"gpt-5.5": { contextWindow: 272000, maxTokens: 16384 },
 	"gpt-5.4": { contextWindow: 400000, maxTokens: 128000 },
 	"gpt-5.4-mini": { contextWindow: 200000, maxTokens: 128000 },
+	// Matches Pi's built-in openai-codex definitions. The upstream /models endpoint
+	// only exposes IDs, so retain these limits and pricing locally.
+	"gpt-5.6-luna": {
+		contextWindow: 372000,
+		maxTokens: 128000,
+		input: ["text", "image"],
+		reasoning: true,
+		thinkingLevelMap: { minimal: "low", xhigh: "xhigh", max: "max" },
+		cost: {
+			input: 1, output: 6, cacheRead: 0.1, cacheWrite: 1.25,
+			tiers: [{ inputTokensAbove: 272000, input: 2, output: 9, cacheRead: 0.2, cacheWrite: 2.5 }],
+		},
+	},
+	"gpt-5.6-sol": {
+		contextWindow: 372000,
+		maxTokens: 128000,
+		input: ["text", "image"],
+		reasoning: true,
+		thinkingLevelMap: { minimal: "low", xhigh: "xhigh", max: "max" },
+		cost: {
+			input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25,
+			tiers: [{ inputTokensAbove: 272000, input: 10, output: 45, cacheRead: 1, cacheWrite: 12.5 }],
+		},
+	},
+	"gpt-5.6-terra": {
+		contextWindow: 372000,
+		maxTokens: 128000,
+		input: ["text", "image"],
+		reasoning: true,
+		thinkingLevelMap: { minimal: "low", xhigh: "xhigh", max: "max" },
+		cost: {
+			input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 3.125,
+			tiers: [{ inputTokensAbove: 272000, input: 5, output: 22.5, cacheRead: 0.5, cacheWrite: 6.25 }],
+		},
+	},
 };
 
-function getDefaultLimit(id: string): { contextWindow: number; maxTokens: number } {
-	return DEFAULT_MODEL_LIMITS[id.toLowerCase()] ?? { contextWindow: 128000, maxTokens: 4096 };
+function getDefaultMetadata(id: string) {
+	return DEFAULT_MODEL_METADATA[id.toLowerCase()] ?? { contextWindow: 128000, maxTokens: 4096 };
 }
 
 function normalizePositiveInteger(value: unknown): number | undefined {
@@ -224,28 +283,28 @@ function buildRegisteredModels(providerVal: ProviderConfig, fetchedModels?: any[
 		const id = m.id;
 		const configured = configuredModels.get(id);
 		const normalizedId = id.toLowerCase().replace(/[^a-z0-9]/g, "");
-		const isReasoning = configured?.reasoning ?? (
+		const defaultMetadata = getDefaultMetadata(id);
+		const remoteContextWindow = pickRemoteContextWindow(m);
+		const remoteMaxTokens = pickRemoteMaxTokens(m);
+		const isReasoning = configured?.reasoning ?? defaultMetadata.reasoning ?? (
 			normalizedId.includes("o1") ||
 			normalizedId.includes("o3") ||
 			normalizedId.includes("reasoning") ||
 			normalizedId.includes("gpt5") ||
 			normalizedId.includes("gpt55")
 		);
-		const defaultLimit = getDefaultLimit(id);
-		const remoteContextWindow = pickRemoteContextWindow(m);
-		const remoteMaxTokens = pickRemoteMaxTokens(m);
 		return {
 			...configured,
 			id,
 			name: m.display_name || m.name || configured?.name || id,
 			reasoning: isReasoning,
-			input: ["text" as const],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: remoteContextWindow ?? configured?.contextWindow ?? defaultLimit.contextWindow,
-			maxTokens: remoteMaxTokens ?? configured?.maxTokens ?? defaultLimit.maxTokens,
+			input: configured?.input ?? defaultMetadata.input ?? ["text" as const],
+			cost: configured?.cost ?? defaultMetadata.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: remoteContextWindow ?? configured?.contextWindow ?? defaultMetadata.contextWindow,
+			maxTokens: remoteMaxTokens ?? configured?.maxTokens ?? defaultMetadata.maxTokens,
 			// 仅 reasoning 模型挂 thinkingLevelMap；非 reasoning 模型留空避免显示思考等级选择器。
 			thinkingLevelMap: isReasoning
-				? (configured?.thinkingLevelMap ?? DEFAULT_THINKING_LEVEL_MAP)
+				? (configured?.thinkingLevelMap ?? defaultMetadata.thinkingLevelMap ?? DEFAULT_THINKING_LEVEL_MAP)
 				: undefined,
 		};
 	});
