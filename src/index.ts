@@ -136,10 +136,10 @@ const DEFAULT_MODEL_METADATA: Record<string, {
 	"gpt-5.5": { contextWindow: 272000, maxTokens: 16384 },
 	"gpt-5.4": { contextWindow: 400000, maxTokens: 128000 },
 	"gpt-5.4-mini": { contextWindow: 200000, maxTokens: 128000 },
-	// Matches Pi's built-in openai-codex definitions. The upstream /models endpoint
-	// only exposes IDs, so retain these limits and pricing locally.
+	// The upstream /models endpoint only exposes IDs. Default to Pi's 272K
+	// short-context tier; users can opt into a larger window in models.json.
 	"gpt-5.6-luna": {
-		contextWindow: 372000,
+		contextWindow: 272000,
 		maxTokens: 128000,
 		input: ["text", "image"],
 		reasoning: true,
@@ -150,7 +150,7 @@ const DEFAULT_MODEL_METADATA: Record<string, {
 		},
 	},
 	"gpt-5.6-sol": {
-		contextWindow: 372000,
+		contextWindow: 272000,
 		maxTokens: 128000,
 		input: ["text", "image"],
 		reasoning: true,
@@ -161,7 +161,7 @@ const DEFAULT_MODEL_METADATA: Record<string, {
 		},
 	},
 	"gpt-5.6-terra": {
-		contextWindow: 372000,
+		contextWindow: 272000,
 		maxTokens: 128000,
 		input: ["text", "image"],
 		reasoning: true,
@@ -174,7 +174,7 @@ const DEFAULT_MODEL_METADATA: Record<string, {
 };
 
 function getDefaultMetadata(id: string) {
-	return DEFAULT_MODEL_METADATA[id.toLowerCase()] ?? { contextWindow: 128000, maxTokens: 4096 };
+	return DEFAULT_MODEL_METADATA[id.toLowerCase()] ?? { contextWindow: 128000, maxTokens: 16384 };
 }
 
 function normalizePositiveInteger(value: unknown): number | undefined {
@@ -277,11 +277,11 @@ function getModelsBase(baseUrl: string): string {
 
 function buildRegisteredModels(providerVal: ProviderConfig, fetchedModels?: any[]): any[] {
 	const configuredModels = new Map(
-		(providerVal.models || []).map((model) => [model.id, model]),
+		(providerVal.models || []).map((model) => [model.id.toLowerCase(), model]),
 	);
 	return (fetchedModels || providerVal.models || []).map((m: any) => {
 		const id = m.id;
-		const configured = configuredModels.get(id);
+		const configured = configuredModels.get(id.toLowerCase());
 		const normalizedId = id.toLowerCase().replace(/[^a-z0-9]/g, "");
 		const defaultMetadata = getDefaultMetadata(id);
 		const remoteContextWindow = pickRemoteContextWindow(m);
