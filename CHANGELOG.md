@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+### Patch Changes
+
+- ff57dd4: change context window to 272K
+
 ## 0.2.0
 
 ### Minor Changes
