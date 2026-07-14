@@ -78,7 +78,8 @@ Example structure:
 {
   "providers": {
     "my-sub2api": {
-      "baseUrl": "https://example.com/v1"
+      "baseUrl": "https://example.com/v1",
+      "api": "openai-completions"
     }
   }
 }
@@ -96,11 +97,29 @@ Example structure:
 
 > Security note: this repository never stores or copies any API key or auth file.
 
+## API adapter
+
+The provider defaults to `openai-completions`. To opt into Pi's generic OpenAI Responses adapter, set `api` explicitly:
+
+```json
+{
+  "providers": {
+    "my-sub2api": {
+      "baseUrl": "https://example.com/v1",
+      "api": "openai-responses"
+    }
+  }
+}
+```
+
+`openai-responses` uses the HTTP/SSE Responses API in this integration. It does not enable WebSocket transport or `websocket-cached`; a Sub2API WebSocket adapter is not included.
+
 ## Development
 
 ```bash
 cd /Users/derek/workspaces/pi-sub2api-provider
 npm ci
+npm test
 npm run check
 npm run pack:dry-run
 ```

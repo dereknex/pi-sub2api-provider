@@ -41,6 +41,7 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
+    "test": "node test/api-selection.test.mjs",
     "pack:dry-run": "npm pack --dry-run",
     "clean": "rm -rf node_modules package-lock.json",
     "changeset": "changeset",

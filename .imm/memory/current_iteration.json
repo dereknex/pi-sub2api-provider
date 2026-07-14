@@ -1,0 +1,195 @@
+{
+  "schema_version": 2,
+  "steps": {
+    "1": {
+      "number": 1,
+      "step_id": "U1",
+      "result": "API selection regression coverage is enforced in Node-only development",
+      "verification": "`npm test && npm run check && npm run pack:dry-run` plus `npm test` with Bun unavailable on `PATH`",
+      "test_scenarios": [
+        "omitted api registers openai-completions",
+        "explicit openai-responses is forwarded",
+        "Node-only PATH passes",
+        "CI invokes npm test"
+      ],
+      "discovery_cache": [
+        {
+          "path": "package.json",
+          "reason": "test command and Node contract"
+        },
+        {
+          "path": "test/api-selection.test.ts",
+          "reason": "behavioral regression check"
+        },
+        {
+          "path": ".github/workflows/check.yml",
+          "reason": "Node-only CI enforcement"
+        },
+        {
+          "path": "README.md",
+          "reason": "documented development command"
+        }
+      ],
+      "parallel_probes": [],
+      "depends_on": [],
+      "agent_hint": null,
+      "state": "closed",
+      "activated_at": "2026-07-14T10:08:20Z",
+      "execution_evidence": {
+        "changed_files": [
+          "package.json",
+          "test/api-selection.test.mjs",
+          ".github/workflows/check.yml"
+        ],
+        "verification_command": "npm test && env PATH=<node-only-path> npm test && npm run check && npm run pack:dry-run",
+        "verification_result": "pass: normal npm test passed; npm test passed with Bun unavailable on PATH; npm run check passed; npm run pack:dry-run passed; git diff --check passed",
+        "notes": "Replaced Bun-specific test execution with Node standard-library subprocess isolation and existing TypeScript transpilation. Added npm test to the Node 20 CI job. No dependency added and provider runtime code unchanged in this repair slice.",
+        "recorded_at": "2026-07-14T10:09:46Z"
+      },
+      "closed_at": "2026-07-14T10:15:00Z"
+    }
+  },
+  "pending_follow_up": null,
+  "last_review": {
+    "decision": "pass",
+    "evidence": "Independent QA pass: Node-based API selection test runs with temporary HOME isolation; omitted and explicit API scenarios pass; npm test passes without Bun on PATH; npm run check and npm run pack:dry-run pass; CI invokes npm test on Node 20.",
+    "artifacts": "",
+    "notes": "",
+    "recorded_at": "2026-07-14T10:15:00Z"
+  },
+  "validated_plan_snapshot": {
+    "plan_path": "docs/plans/node-only-api-selection-test.md",
+    "plan_signature": "a04a632000ee0454bd727b956201d129f48b4464e07c2457c4778c3fbffe36f7",
+    "steps": [
+      {
+        "number": 1,
+        "step_id": "U1",
+        "result": "API selection regression coverage is enforced in Node-only development",
+        "verification": "`npm test && npm run check && npm run pack:dry-run` plus `npm test` with Bun unavailable on `PATH`",
+        "depends_on": [],
+        "discovery_cache": [
+          {
+            "path": "package.json",
+            "reason": "test command and Node contract"
+          },
+          {
+            "path": "test/api-selection.test.ts",
+            "reason": "behavioral regression check"
+          },
+          {
+            "path": ".github/workflows/check.yml",
+            "reason": "Node-only CI enforcement"
+          },
+          {
+            "path": "README.md",
+            "reason": "documented development command"
+          }
+        ],
+        "parallel_probes": [],
+        "agent_hint": null,
+        "test_scenarios": [
+          "omitted api registers openai-completions",
+          "explicit openai-responses is forwarded",
+          "Node-only PATH passes",
+          "CI invokes npm test"
+        ]
+      }
+    ]
+  },
+  "history": [
+    {
+      "at": "2026-07-14T09:09:08Z",
+      "action": "sync_plan_from_imm_plan",
+      "details": {
+        "plan_path": "docs/plans/configurable-provider-api.md",
+        "plan_signature": "19577065c8672eded8bdc238ef8ddcaededcf48d63d74d138d5d9ba464d8e862",
+        "same_plan": false
+      }
+    },
+    {
+      "at": "2026-07-14T09:31:03Z",
+      "action": "review_step",
+      "details": {
+        "step_number": 1,
+        "step_id": "U1",
+        "decision": "pass",
+        "target_kind": "plan_step"
+      }
+    },
+    {
+      "at": "2026-07-14T09:37:37Z",
+      "action": "review_gate_pass",
+      "details": {
+        "gate": "imm-code-review",
+        "reviewed_changed_files": [
+          ".changeset/configurable-provider-api.md",
+          "README.md",
+          "package.json",
+          "src/index.ts",
+          "test/api-selection.test.ts"
+        ],
+        "evidence_ref": "Independent imm-code-review pass: U1 diff is scoped and backwards compatible; explicit API forwarding and default fallback are correct; tests and documentation accurately cover HTTP/SSE without WebSocket support."
+      }
+    },
+    {
+      "at": "2026-07-14T10:04:23Z",
+      "action": "sync_plan_from_imm_plan",
+      "details": {
+        "plan_path": "docs/plans/node-only-api-selection-test.md",
+        "plan_signature": "a04a632000ee0454bd727b956201d129f48b4464e07c2457c4778c3fbffe36f7",
+        "same_plan": false
+      }
+    },
+    {
+      "at": "2026-07-14T10:15:00Z",
+      "action": "review_step",
+      "details": {
+        "step_number": 1,
+        "step_id": "U1",
+        "decision": "pass",
+        "target_kind": "plan_step"
+      }
+    },
+    {
+      "at": "2026-07-14T10:16:27Z",
+      "action": "review_gate_pass",
+      "details": {
+        "gate": "imm-code-review",
+        "reviewed_changed_files": [
+          ".github/workflows/check.yml",
+          "package.json",
+          "test/api-selection.test.mjs"
+        ],
+        "evidence_ref": "Independent imm-code-review pass: Node-only test uses existing TypeScript plus Node subprocess APIs; temporary HOME isolation and both API assertions are correct; CI runs npm test; no dependency or runtime provider change was introduced."
+      }
+    }
+  ],
+  "requires_replan": false,
+  "runtime_status": "idle",
+  "plan_path": "docs/plans/node-only-api-selection-test.md",
+  "plan_summary": "The API selection regression check runs in the declared Node-only environment.",
+  "plan_signature": "a04a632000ee0454bd727b956201d129f48b4464e07c2457c4778c3fbffe36f7",
+  "plan_last_validated_at": "2026-07-14T10:04:23Z",
+  "completed_steps": [
+    1
+  ],
+  "active_step": null,
+  "next_action": null,
+  "review_state": {
+    "gates": {
+      "imm-code-review": {
+        "gate": "imm-code-review",
+        "decision": "pass",
+        "reviewed_changed_files": [
+          ".github/workflows/check.yml",
+          "package.json",
+          "test/api-selection.test.mjs"
+        ],
+        "changed_files_signature": "7f0cceaa5f014e3b1d87e7d499cc7c9bf338fe1ca55a4cc0bc85405ef4dadcb6",
+        "evidence_ref": "Independent imm-code-review pass: Node-only test uses existing TypeScript plus Node subprocess APIs; temporary HOME isolation and both API assertions are correct; CI runs npm test; no dependency or runtime provider change was introduced.",
+        "reviewer_skill": "imm-code-review",
+        "reviewed_at": "2026-07-14T10:16:27Z"
+      }
+    }
+  }
+}

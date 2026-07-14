@@ -323,7 +323,7 @@ function registerProviderModels(
 		baseUrl: state.modelsBase,
 		apiKey: state.apiKey,
 		authHeader: true,
-		api: "openai-completions",
+		api: state.providerVal.api ?? "openai-completions",
 		models,
 	});
 	return true;
