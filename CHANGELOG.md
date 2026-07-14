@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0
+
+### Minor Changes
+
+- 44f88d1: Support for specified API types
+
+### Patch Changes
+
+- 44f88d1: Honor the provider-level `api` setting from `models.json`, while keeping `openai-completions` as the default.
+
 ## 0.2.1
 
 ### Patch Changes
